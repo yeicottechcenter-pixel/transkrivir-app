@@ -1,4 +1,4 @@
-import streamlit as st
+mport streamlit as st
 import google.generativeai as genai
 import subprocess
 import os
@@ -21,6 +21,7 @@ st.markdown("""
         background-color: #FF4B4B;
         color: white;
         font-weight: bold;
+        border-radius: 10px;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -29,22 +30,18 @@ st.markdown("""
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("⚠️ No se encontró la clave secreta 'GOOGLE_API_KEY'. Por favor configúrala en los Secrets del panel de Streamlit.")
+    st.error("⚠️ Error: No se encontró la clave 'GOOGLE_API_KEY' en los Secrets de Streamlit.")
     st.stop()
 
 # --- FUNCIÓN 1: BUSCAR HERRAMIENTAS (Robustez Nube/Local) ---
 def configurar_ffmpeg():
-    # 1. Buscamos en el sistema (Para Streamlit Cloud / Linux)
     if shutil.which("ffmpeg"):
         return "ffmpeg", "ffprobe"
-    
-    # 2. Buscamos en la carpeta local (Para tu Windows)
     if os.path.exists("ffmpeg.exe"):
         return "ffmpeg.exe", "ffprobe.exe"
-    
     return None, None
 
-# --- FUNCIÓN 2: OBTENER DURACIÓN (Corregida para Linux/Nube) ---
+# --- FUNCIÓN 2: OBTENER DURACIÓN ---
 def obtener_duracion(archivo, ffprobe_path):
     cmd = [
         ffprobe_path, 
@@ -77,31 +74,32 @@ st.markdown("### Tu Inteligencia Artificial para Juntas y Audiencias")
 
 # --- BARRA LATERAL: MONETIZACIÓN Y CONTACTO ---
 with st.sidebar:
-    st.header("💰 Apoya el proyecto")
-    st.info("Esta herramienta utiliza Inteligencia Artificial avanzada para procesar tus audios y ahorrarte horas de trabajo.")
+    st.header("💰 Apoya este Proyecto")
+    st.info("Esta herramienta usa IA avanzada para ahorrarte horas de trabajo.")
     
+    st.markdown("### ¿Te fue útil? ¡Apóyame! ☕")
     st.markdown("""
-    **¡Invítame un café o apóyame! ☕**
-    
-    Si esta herramienta te fue útil, puedes realizar una donación a:
-    
-    * 📱 **Nequi:** 3023236538
-    * 📱 **Daviplata:** 3023236538
+    Puedes donar a:
+    * 🟣 **Nequi:** `302 323 6538`
+    * 🔴 **Daviplata:** `302 323 6538`
     """)
     
     st.divider()
     st.write("📧 **Contacto para empresas:**")
-    st.write("yeicottechcenter@gmail.com")
+    st.code("yeicottechcenter@gmail.com")
 
-uploaded_file = st.file_uploader("Sube tu archivo de audio (MP3, M4A, WAV)", type=['mp3', 'm4a', 'wav'])
+# --- SUBIDA DE ARCHIVO (Soporte FLAC incluido) ---
+uploaded_file = st.file_uploader("Sube tu archivo de audio (MP3, M4A, WAV, FLAC)", type=['mp3', 'm4a', 'wav', 'flac'])
 
 if uploaded_file:
     # Guardar archivo temporalmente
-    nombre_temp = "audio_temp.mp3" 
+    ext = uploaded_file.name.split('.')[-1]
+    nombre_temp = f"audio_temp.{ext}"
+    
     with open(nombre_temp, "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    # El Chivato: Ver actividad en logs
+    # Logs
     print(f"👀 NUEVO CLIENTE: Subió '{uploaded_file.name}' ({uploaded_file.size} bytes)")
 
     ffmpeg_path, ffprobe_path = configurar_ffmpeg()
@@ -110,7 +108,6 @@ if uploaded_file:
         st.error("❌ Error: No encuentro FFmpeg. (Si estás en la nube, intenta 'Reboot App').")
         st.stop()
 
-    # Obtener duración
     duracion_seg = obtener_duracion(nombre_temp, ffprobe_path)
     
     if duracion_seg > 0:
@@ -131,7 +128,7 @@ if uploaded_file:
             if total_partes == 0: total_partes = 1 
             
             nombre_salida = f"Transcripcion_{uploaded_file.name}.txt"
-            texto_completo = ""
+            texto_completo = f"--- TRANSCRIPCIÓN: {uploaded_file.name} ---\nDuración: {minutos_total} min\n\n"
             
             barra = st.progress(0)
             estado = st.empty()
@@ -144,27 +141,21 @@ if uploaded_file:
                 
                 estado.info(f"⏳ Procesando bloque {i+1} de {total_partes} (Minuto {min_real})...")
                 
-                # 1. Cortar
                 cortar_audio(ffmpeg_path, nombre_temp, inicio, segundos_bloque, nombre_chunk)
                 
-                # 2. Procesar con IA
                 try:
                     archivo_nube = genai.upload_file(path=nombre_chunk)
-                    
-                    # Esperar procesamiento
                     while archivo_nube.state.name == "PROCESSING":
                         time.sleep(1)
                         archivo_nube = genai.get_file(archivo_nube.name)
                     
                     prompt = f"Transcribe este audio que inicia en el minuto {min_real}. Identifica hablantes. Escribe marcas de tiempo [MM:SS] sumando {min_real} minutos."
-                    
                     response = model.generate_content([prompt, archivo_nube])
                     texto_bloque = response.text
                     
                     texto_completo += f"\n\n--- BLOQUE MIN {min_real} ---\n{texto_bloque}"
                     area_texto.text_area("Vista en vivo:", value=texto_completo, height=300)
                     
-                    # Limpieza del bloque
                     genai.delete_file(archivo_nube.name)
                     os.remove(nombre_chunk)
                     
@@ -173,7 +164,7 @@ if uploaded_file:
                 
                 barra.progress((i + 1) / total_partes)
 
-            estado.success("¡Terminado!")
+            estado.success("¡Terminado! 🎉")
             st.balloons() 
             
             st.download_button(
