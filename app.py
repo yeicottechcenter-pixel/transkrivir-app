@@ -85,8 +85,8 @@ with st.sidebar:
     st.header("💰 Apoya el proyecto")
     st.info("Esta herramienta utiliza Inteligencia Artificial avanzada para procesar tus audios.")
     st.write("Si te fue útil, ¡invítame un café!")
-    # Aquí podrías poner tu link de PayPal en el futuro
-    st.write("📧 Contacto: yeicot@transkrivir.ai")
+    Nequi y Daviplata 3023236538
+    st.write("📧 Contacto: yeicottechcenter@gmail.com Tel: 3023236538")
 
 uploaded_file = st.file_uploader("Sube tu archivo de audio (MP3, M4A, WAV)", type=['mp3', 'm4a', 'wav'])
 
@@ -184,3 +184,4 @@ if uploaded_file:
             st.error(f"Ocurrió un error general: {e}")
             
     # Limpieza final del archivo original (opcional, Streamlit lo limpia al recargar)
+
