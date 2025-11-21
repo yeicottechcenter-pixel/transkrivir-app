@@ -26,11 +26,9 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- SEGURIDAD: RECUPERAR CLAVE DE LA CAJA FUERTE (SECRETS) ---
-# Esto busca la clave en la configuración segura de Streamlit Cloud.
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
 except:
-    # Si estás corriendo esto localmente y no tienes secrets.toml, o si no has configurado la nube:
     st.error("⚠️ No se encontró la clave secreta 'GOOGLE_API_KEY'. Por favor configúrala en los Secrets del panel de Streamlit.")
     st.stop()
 
@@ -56,11 +54,9 @@ def obtener_duracion(archivo, ffprobe_path):
         archivo
     ]
     try:
-        # shell=False es vital para que funcione en la nube
         salida = subprocess.check_output(cmd, shell=False, stderr=subprocess.STDOUT).decode().strip()
         return float(salida)
     except Exception as e:
-        # Si falla, devolvemos 0 para manejarlo después
         return 0
 
 # --- FUNCIÓN 3: CORTAR AUDIO ---
@@ -73,31 +69,39 @@ def cortar_audio(ffmpeg_path, entrada, inicio, duracion, salida):
         "-vn", "-acodec", "libmp3lame", "-q:a", "4", 
         salida
     ]
-    # shell=False para estabilidad en Linux
     subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, shell=False)
 
 # --- INTERFAZ PRINCIPAL ---
 st.title("🎙️ TransKrivir.ai")
 st.markdown("### Tu Inteligencia Artificial para Juntas y Audiencias")
 
-# --- BARRA LATERAL: MONETIZACIÓN (Opcional) ---
+# --- BARRA LATERAL: MONETIZACIÓN Y CONTACTO ---
 with st.sidebar:
     st.header("💰 Apoya el proyecto")
-    st.info("Esta herramienta utiliza Inteligencia Artificial avanzada para procesar tus audios.")
-    st.write("Si te fue útil, ¡invítame un café!")
-    Nequi y Daviplata 3023236538
-    st.write("📧 Contacto: yeicottechcenter@gmail.com Tel: 3023236538")
+    st.info("Esta herramienta utiliza Inteligencia Artificial avanzada para procesar tus audios y ahorrarte horas de trabajo.")
+    
+    st.markdown("""
+    **¡Invítame un café o apóyame! ☕**
+    
+    Si esta herramienta te fue útil, puedes realizar una donación a:
+    
+    * 📱 **Nequi:** 3023236538
+    * 📱 **Daviplata:** 3023236538
+    """)
+    
+    st.divider()
+    st.write("📧 **Contacto para empresas:**")
+    st.write("yeicottechcenter@gmail.com")
 
 uploaded_file = st.file_uploader("Sube tu archivo de audio (MP3, M4A, WAV)", type=['mp3', 'm4a', 'wav'])
 
 if uploaded_file:
     # Guardar archivo temporalmente
-    # Usamos un nombre simple sin espacios para evitar problemas en Linux
     nombre_temp = "audio_temp.mp3" 
     with open(nombre_temp, "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    # El Chivato: Ver quién usa tu app en los logs
+    # El Chivato: Ver actividad en logs
     print(f"👀 NUEVO CLIENTE: Subió '{uploaded_file.name}' ({uploaded_file.size} bytes)")
 
     ffmpeg_path, ffprobe_path = configurar_ffmpeg()
@@ -114,12 +118,11 @@ if uploaded_file:
         st.success(f"✅ Audio analizado: {minutos_total} minutos reales.")
     else:
         st.warning("⚠️ No pude leer la duración exacta. Usaré el modo seguro (10 min).")
-        minutos_total = 10 # Fallback
+        minutos_total = 10 
 
     if st.button("🚀 INICIAR TRANSCRIPCIÓN"):
         try:
             genai.configure(api_key=api_key)
-            # Usamos Flash 2.0 con temperatura 0 para precisión (Configuración Ganadora)
             model = genai.GenerativeModel('models/gemini-2.0-flash', generation_config={"temperature": 0.0})
             
             MINUTOS_BLOQUE = 20
@@ -171,7 +174,7 @@ if uploaded_file:
                 barra.progress((i + 1) / total_partes)
 
             estado.success("¡Terminado!")
-            st.balloons() # Un pequeño detalle de celebración 🎉
+            st.balloons() 
             
             st.download_button(
                 label="📥 Descargar Transcripción Completa", 
@@ -182,6 +185,3 @@ if uploaded_file:
             
         except Exception as e:
             st.error(f"Ocurrió un error general: {e}")
-            
-    # Limpieza final del archivo original (opcional, Streamlit lo limpia al recargar)
-
