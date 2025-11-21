@@ -39,7 +39,6 @@ with st.sidebar:
     
     st.divider()
     st.subheader("📞 Contacto Directo")
-    # Enlace inteligente a WhatsApp
     st.markdown("""
     ¿Necesitas soporte o desarrollo a medida?
     
@@ -48,7 +47,6 @@ with st.sidebar:
     """)
     
     st.divider()
-    # Info técnica discreta al final
     st.caption(f"Motor IA: Google GenerativeAI v{genai.__version__}")
 
 # ==========================================
@@ -66,23 +64,10 @@ def obtener_duracion(archivo, ffprobe_path):
     except: return 0
 
 def cortar_audio(ffmpeg_path, entrada, inicio, duracion, salida):
-    # Mantenemos el filtro -ar 16000 para evitar el error del "se se se"
+    # Filtro anti-ruido (-ar 16000) vital para evitar el "se se se"
     cmd = [ffmpeg_path, "-y", "-i", entrada, "-ss", str(inicio), "-t", str(duracion), 
            "-vn", "-acodec", "libmp3lame", "-ac", "1", "-ar", "16000", "-b:a", "64k", salida]
     subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, shell=False)
-
-def obtener_mejor_modelo():
-    # Busca automáticamente el mejor modelo disponible en tu cuenta
-    try:
-        modelos = list(genai.list_models())
-        nombres = [m.name for m in modelos]
-        for n in nombres:
-            if 'gemini-2.0-flash' in n: return n
-        for n in nombres:
-            if 'gemini-1.5-flash' in n: return n
-        return "models/gemini-1.5-flash"
-    except:
-        return "models/gemini-1.5-flash"
 
 # ==========================================
 # 🚀 APP PRINCIPAL
@@ -109,12 +94,15 @@ if uploaded_file:
     if duracion_seg > 0:
         st.success(f"✅ Archivo cargado: {int(duracion_seg/60)} minutos.")
     else:
-        duracion_seg = 600 # 10 min por defecto si falla lectura
+        duracion_seg = 600 
 
     if st.button("🚀 TRANSCRIBIR AHORA"):
         try:
             genai.configure(api_key=api_key)
-            nombre_modelo = obtener_mejor_modelo()
+            
+            # --- CORRECCIÓN: FORZAMOS EL MODELO 1.5 (EL ESTABLE) ---
+            # El 2.0 experimental tiene cuotas muy bajas (limit: 0), por eso te dio error 429.
+            nombre_modelo = "models/gemini-1.5-flash"
             
             model = genai.GenerativeModel(nombre_modelo, generation_config={"temperature": 0.2})
             
@@ -138,11 +126,12 @@ if uploaded_file:
                 
                 try:
                     archivo_nube = genai.upload_file(path=nombre_chunk)
+                    
+                    # Esperar a que procese
                     while archivo_nube.state.name == "PROCESSING":
                         time.sleep(1)
                         archivo_nube = genai.get_file(archivo_nube.name)
                     
-                    # Prompt Estricto para formato Hablante + Tiempo
                     prompt = f"""
                     Actúa como un transcriptor profesional.
                     Tu tarea es transcribir este audio que comienza en el minuto {min_real}.
@@ -157,11 +146,18 @@ if uploaded_file:
                     texto_completo += f"\n\n--- BLOQUE MINUTO {min_real} ---\n{response.text}"
                     area_texto.text_area("Transcripción en vivo:", value=texto_completo, height=400)
                     
+                    # Limpieza
                     genai.delete_file(archivo_nube.name)
                     os.remove(nombre_chunk)
+
+                    # --- PAUSA ANTI-ERROR 429 ---
+                    # Esperamos 5 segundos entre bloques para que Google no bloquee por velocidad
+                    time.sleep(5)
                     
                 except Exception as e:
                     st.error(f"Error en bloque {i}: {e}")
+                    # Si sale error de cuota, esperamos 10 segundos extra
+                    time.sleep(10)
                 
                 barra.progress((i+1)/total_partes)
 
