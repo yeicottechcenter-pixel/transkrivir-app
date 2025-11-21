@@ -72,7 +72,7 @@ if uploaded_file:
         try:
             genai.configure(api_key=api_key)
             # Usamos flash 1.5 por ser más estable para textos largos que el 2.0 experimental
-            model = genai.GenerativeModel('models/gemini-1.5-flash', generation_config={"temperature": 0})
+            model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"temperature": 0})
             
             MINUTOS_BLOQUE = 20
             segundos_bloque = MINUTOS_BLOQUE * 60
@@ -115,3 +115,4 @@ if uploaded_file:
             
         except Exception as e:
             st.error(f"Error general: {e}")
+
