@@ -32,16 +32,26 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNCIÓN PARA BUSCAR HERRAMIENTAS ---
+# --- CONFIGURACIÓN DE CLAVE (MODELO DE NEGOCIO) ---
+# Aquí ponemos tu clave para que el cliente no tenga que ponerla.
+# El sistema usa TU cuenta para procesar (tú asumes el micro-costo).
+api_key = "AIzaSyD0TzF0LwQwGDEZQxyLxyzXlewldgMjrG8"
+
+# --- FUNCIÓN PARA BUSCAR HERRAMIENTAS (Detecta Nube o Local) ---
 def configurar_ffmpeg():
-    cwd = os.getcwd()
-    ffmpeg_exe = os.path.join(cwd, "ffmpeg.exe")
-    ffprobe_exe = os.path.join(cwd, "ffprobe.exe")
+    # 1. Intentar buscar en el sistema (Para la Nube/Linux)
+    if shutil.which("ffmpeg"):
+        return "ffmpeg", "ffprobe"
     
-    if os.path.exists(ffmpeg_exe) and os.path.exists(ffprobe_exe):
-        return ffmpeg_exe, ffprobe_exe
-    else:
-        return None, None
+    # 2. Intentar buscar en carpeta local (Para tu PC Windows)
+    cwd = os.getcwd()
+    ffmpeg_local = os.path.join(cwd, "ffmpeg.exe")
+    ffprobe_local = os.path.join(cwd, "ffprobe.exe")
+    
+    if os.path.exists(ffmpeg_local) and os.path.exists(ffprobe_local):
+        return ffmpeg_local, ffprobe_local
+    
+    return None, None
 
 # --- FUNCIÓN: OBTENER DURACIÓN ---
 def obtener_duracion(archivo, ffprobe_path):
@@ -68,13 +78,15 @@ st.title("🎙️ TransKrivir.ai")
 st.markdown("### Tu Inteligencia Artificial para Juntas y Audiencias")
 st.info("Sube audios largos (3+ horas). El sistema los cortará y procesará automáticamente.")
 
-# 1. CAMPO PARA LA API KEY (Para que sea seguro)
-api_key = st.text_input("🔑 Ingresa tu Google API Key:", type="password", placeholder="AIzaSyD...")
+# --- 1. VERIFICACIÓN DE API KEY ---
+if not api_key:
+    st.error("❌ Error crítico: No hay API Key configurada en el servidor.")
+    st.stop()
 
-# 2. SUBIR ARCHIVO
+# --- 2. SUBIR ARCHIVO ---
 uploaded_file = st.file_uploader("Sube tu archivo de audio (MP3, M4A, WAV)", type=['mp3', 'm4a', 'wav'])
 
-if uploaded_file and api_key:
+if uploaded_file:
     # Guardar archivo temporalmente
     nombre_temp = "audio_temp_subido.mp3"
     with open(nombre_temp, "wb") as f:
@@ -83,100 +95,108 @@ if uploaded_file and api_key:
     ffmpeg_path, ffprobe_path = configurar_ffmpeg()
     
     if not ffmpeg_path:
-        st.error("❌ Error: No encuentro ffmpeg.exe en la carpeta del proyecto.")
+        st.error("❌ Error: No encuentro FFmpeg. Si estás en local, copia los .exe. Si estás en nube, revisa packages.txt.")
         st.stop()
 
     # Obtener duración
     duracion_seg = obtener_duracion(nombre_temp, ffprobe_path)
-    minutos_total = int(duracion_seg / 60)
+    if duracion_seg == 0:
+        st.warning("No pude leer la duración. Intentaré procesarlo igual, pero puede fallar el corte.")
+        minutos_total = 10 # Valor por defecto si falla
+    else:
+        minutos_total = int(duracion_seg / 60)
     
-    st.success(f"✅ Audio cargado: {minutos_total} minutos detectados.")
+    st.success(f"✅ Audio cargado correctamente: {minutos_total} minutos detectados.")
     
     # Botón de inicio
-    if st.button("🚀 INICIAR TRANSCRIPCIÓN INTELIGENTE"):
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('models/gemini-2.0-flash', generation_config={"temperature": 0.0})
-        
-        # Configuración de bloques
-        MINUTOS_BLOQUE = 20
-        segundos_bloque = MINUTOS_BLOQUE * 60
-        total_partes = math.ceil(duracion_seg / segundos_bloque)
-        
-        # Archivo de salida final
-        nombre_salida = "Transcripcion_Completa.txt"
-        with open(nombre_salida, "w", encoding="utf-8") as f:
-            f.write(f"--- TRANSCRIPCIÓN: {uploaded_file.name} ---\n\n")
-
-        # Barra de progreso
-        barra_progreso = st.progress(0)
-        estado_texto = st.empty()
-        area_texto = st.empty()
-        texto_acumulado = ""
-
-        for i in range(total_partes):
-            inicio = i * segundos_bloque
-            min_real = int(inicio / 60)
-            nombre_chunk = f"temp_parte_{i}.mp3"
+    if st.button("🚀 INICIAR TRANSCRIPCIÓN"):
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('models/gemini-2.0-flash', generation_config={"temperature": 0.0})
             
-            # Actualizar estado
-            estado_texto.markdown(f"**⏳ Procesando Parte {i+1}/{total_partes} (Minuto {min_real})...**")
+            # Configuración de bloques
+            MINUTOS_BLOQUE = 20
+            segundos_bloque = MINUTOS_BLOQUE * 60
+            total_partes = math.ceil(duracion_seg / segundos_bloque)
             
-            # 1. CORTAR
-            cortar_audio(ffmpeg_path, nombre_temp, inicio, segundos_bloque, nombre_chunk)
-            
-            # 2. SUBIR Y TRANSCRIBIR
-            try:
-                archivo_nube = genai.upload_file(path=nombre_chunk)
-                
-                # Esperar a que esté activo
-                while archivo_nube.state.name == "PROCESSING":
-                    time.sleep(2)
-                    archivo_nube = genai.get_file(archivo_nube.name)
+            # Archivo de salida final
+            nombre_salida = "Transcripcion_Completa.txt"
+            with open(nombre_salida, "w", encoding="utf-8") as f:
+                f.write(f"--- TRANSCRIPCIÓN: {uploaded_file.name} ---\n\n")
 
-                prompt = f"""
-                Eres un estenógrafo experto.
-                Esta es la parte {i+1} de una reunión que inicia en el minuto {min_real}.
-                Transcribe palabra por palabra. Identifica hablantes.
-                En las marcas de tiempo [MM:SS], suma {min_real} minutos al tiempo real.
-                """
-                
-                response = model.generate_content([prompt, archivo_nube])
-                texto_bloque = response.text
-                
-                # Guardar
-                with open(nombre_salida, "a", encoding="utf-8") as f:
-                    f.write(f"\n--- BLOQUE MINUTO {min_real} ---\n")
-                    f.write(texto_bloque + "\n")
-                
-                texto_acumulado += f"\n\n--- BLOQUE {min_real} ---\n" + texto_bloque
-                area_texto.text_area("Vista Previa (En vivo):", value=texto_acumulado, height=300)
+            # Barra de progreso
+            barra_progreso = st.progress(0)
+            estado_texto = st.empty()
+            area_texto = st.empty()
+            texto_acumulado = ""
 
-                # Limpieza
+            for i in range(total_partes):
+                inicio = i * segundos_bloque
+                min_real = int(inicio / 60)
+                nombre_chunk = f"temp_parte_{i}.mp3"
+                
+                # Actualizar estado
+                estado_texto.markdown(f"**⏳ Procesando Parte {i+1}/{total_partes} (Minuto {min_real})...**")
+                
+                # 1. CORTAR
+                cortar_audio(ffmpeg_path, nombre_temp, inicio, segundos_bloque, nombre_chunk)
+                
+                # 2. SUBIR Y TRANSCRIBIR
                 try:
-                    genai.delete_file(archivo_nube.name)
-                    os.remove(nombre_chunk)
-                except:
-                    pass
-                
-            except Exception as e:
-                st.error(f"Error en el bloque {i+1}: {e}")
+                    archivo_nube = genai.upload_file(path=nombre_chunk)
+                    
+                    # Esperar a que esté activo
+                    while archivo_nube.state.name == "PROCESSING":
+                        time.sleep(2)
+                        archivo_nube = genai.get_file(archivo_nube.name)
 
-            # Actualizar barra
-            barra_progreso.progress((i + 1) / total_partes)
+                    prompt = f"""
+                    Eres un estenógrafo experto.
+                    Esta es la parte {i+1} de una reunión que inicia en el minuto {min_real}.
+                    Transcribe palabra por palabra. Identifica hablantes.
+                    En las marcas de tiempo [MM:SS], suma {min_real} minutos al tiempo real.
+                    """
+                    
+                    response = model.generate_content([prompt, archivo_nube])
+                    texto_bloque = response.text
+                    
+                    # Guardar
+                    with open(nombre_salida, "a", encoding="utf-8") as f:
+                        f.write(f"\n--- BLOQUE MINUTO {min_real} ---\n")
+                        f.write(texto_bloque + "\n")
+                    
+                    texto_acumulado += f"\n\n--- BLOQUE {min_real} ---\n" + texto_bloque
+                    area_texto.text_area("Vista Previa (En vivo):", value=texto_acumulado, height=300)
 
-        estado_texto.success("🎉 ¡TRANSCRIPCIÓN FINALIZADA!")
-        
-        # BOTÓN DE DESCARGA
-        with open(nombre_salida, "r", encoding="utf-8") as f:
-            st.download_button(
-                label="📥 DESCARGAR TRANSCRIPCIÓN COMPLETA",
-                data=f,
-                file_name=f"Transcripcion_{uploaded_file.name}.txt",
-                mime="text/plain"
-            )
-        
-        # Limpiar archivo original temporal
-        os.remove(nombre_temp)
+                    # Limpieza
+                    try:
+                        genai.delete_file(archivo_nube.name)
+                        os.remove(nombre_chunk)
+                    except:
+                        pass
+                    
+                except Exception as e:
+                    st.error(f"Error en el bloque {i+1}: {e}")
 
-elif not api_key:
-    st.warning("⚠️ Por favor ingresa tu API Key para comenzar.")
+                # Actualizar barra
+                barra_progreso.progress((i + 1) / total_partes)
+
+            estado_texto.success("🎉 ¡TRANSCRIPCIÓN FINALIZADA!")
+            
+            # BOTÓN DE DESCARGA
+            with open(nombre_salida, "r", encoding="utf-8") as f:
+                st.download_button(
+                    label="📥 DESCARGAR TRANSCRIPCIÓN COMPLETA",
+                    data=f,
+                    file_name=f"Transcripcion_{uploaded_file.name}.txt",
+                    mime="text/plain"
+                )
+            
+            # Limpiar archivo original temporal al finalizar
+            try:
+                os.remove(nombre_temp)
+            except:
+                pass
+
+        except Exception as e:
+            st.error(f"Ocurrió un error general: {e}")
