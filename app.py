@@ -1,4 +1,4 @@
-mport streamlit as st
+import streamlit as st
 import google.generativeai as genai
 import subprocess
 import os
@@ -176,3 +176,4 @@ if uploaded_file:
             
         except Exception as e:
             st.error(f"Ocurrió un error general: {e}")
+
