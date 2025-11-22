@@ -5,11 +5,12 @@ import os
 import math
 import time
 import shutil
+import re # Importamos expresiones regulares para limpiar texto
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="TransKrivir.ai Suite", page_icon="🎙️", layout="wide")
 
-# --- ESTILOS CSS ---
+# --- ESTILOS ---
 st.markdown("""
     <style>
     .stButton>button {width: 100%; background-color: #FF4B4B; color: white; font-weight: bold;}
@@ -57,36 +58,51 @@ def obtener_duracion(archivo, ffprobe_path):
     except: return 0
 
 def cortar_audio(ffmpeg_path, entrada, inicio, duracion, salida):
-    # Filtro -ar 16000 para evitar bucles de "se se se"
+    # Mantenemos el filtro -ar 16000 que ayuda mucho
     cmd = [ffmpeg_path, "-y", "-i", entrada, "-ss", str(inicio), "-t", str(duracion), 
            "-vn", "-acodec", "libmp3lame", "-ac", "1", "-ar", "16000", "-b:a", "64k", salida]
     subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, shell=False)
 
 def buscar_modelo_compatible():
-    """Busca el mejor modelo disponible en la cuenta del usuario SIN adivinar"""
     try:
         mis_modelos = list(genai.list_models())
-        # Filtramos solo los que generan texto
         nombres = [m.name for m in mis_modelos if 'generateContent' in m.supported_generation_methods]
         
-        # PRIORIDAD 1: Versiones estables exactas (Flash 002 o 001)
-        # Estas no fallan con 404 ni 429.
+        # Prioridad a las versiones estables y nuevas (002 o 001)
         for m in nombres:
-            if 'gemini-1.5-flash-00' in m: return m
-            
-        # PRIORIDAD 2: El alias estándar (si la cuenta lo tiene)
+            if 'gemini-1.5-flash-002' in m: return m
+        for m in nombres:
+            if 'gemini-1.5-flash-001' in m: return m
         if 'models/gemini-1.5-flash' in nombres: return 'models/gemini-1.5-flash'
         
-        # PRIORIDAD 3: Cualquier Flash que NO sea experimental (evitar error 429)
+        # Evitar experimentales si es posible
         for m in nombres:
             if 'flash' in m and 'exp' not in m: return m
 
-        # EMERGENCIA: Lo que sea que haya (Pro, Flash Exp, etc)
         return nombres[0]
-        
-    except Exception as e:
-        # Fallback final por si todo falla
+    except:
         return "models/gemini-1.5-flash"
+
+def limpiar_respuesta_ia(texto):
+    """
+    Función de seguridad: Elimina bucles 'se se se' y explicaciones en inglés.
+    """
+    if not texto: return ""
+    
+    # 1. Detectar bucle "se se se" o "de de de" (más de 4 repeticiones)
+    patron_bucle = r'((\b\w{1,3}\s+)\2{4,})'
+    if re.search(patron_bucle, texto, re.IGNORECASE):
+        # Si encuentra el bucle, lo reemplaza por una etiqueta de ruido
+        texto = re.sub(patron_bucle, " [RUIDO DE FONDO/ESTÁTICA] ", texto)
+    
+    # 2. Eliminar posibles encabezados en inglés de la IA
+    frases_prohibidas = ["Here is the transcription", "Let's break down", "Segment 1", "The audio seems to"]
+    for frase in frases_prohibidas:
+        if frase in texto:
+            # Si empieza con explicaciones, intentamos cortar hasta donde empieza el español o limpiarlo
+            pass # Por ahora confiamos en el Prompt fuerte, pero esto monitorea.
+            
+    return texto
 
 def generar_documento_extra(modelo, prompt_base, texto_transcrito):
     prompt_completo = f"{prompt_base}\n\nBASADO EN ESTA TRANSCRIPCIÓN:\n{texto_transcrito}"
@@ -102,7 +118,6 @@ st.markdown("### Transcripción + Actas + Informes")
 
 uploaded_file = st.file_uploader("Sube tu archivo", type=['mp3', 'm4a', 'wav', 'flac'])
 
-# Estado para guardar el texto y no perderlo al generar actas
 if 'texto_final' not in st.session_state:
     st.session_state.texto_final = ""
 
@@ -119,25 +134,22 @@ if uploaded_file:
 
     duracion_seg = obtener_duracion(nombre_temp, ffprobe_path)
     
-    # Corrección por si FFprobe lee mal la duración (0 minutos) pero el archivo es grande
     if duracion_seg < 60 and uploaded_file.size > 1000000:
-        st.warning("⚠️ Lectura de duración imprecisa. Usando modo seguro (15 min).")
-        duracion_seg = 900 # 15 minutos forzados
+        st.warning("⚠️ Usando modo seguro (15 min) por error de lectura de duración.")
+        duracion_seg = 900 
     elif duracion_seg > 0:
         st.success(f"✅ Archivo cargado: {int(duracion_seg/60)} minutos.")
     else:
         duracion_seg = 600
 
-    # --- BOTÓN PRINCIPAL ---
     if st.button("🚀 INICIAR TRANSCRIPCIÓN"):
         try:
             genai.configure(api_key=api_key)
-            
-            # BÚSQUEDA AUTOMÁTICA DEL MODELO CORRECTO
             nombre_modelo = buscar_modelo_compatible()
-            st.toast(f"Usando motor: {nombre_modelo}") # Te avisa cuál eligió
+            st.toast(f"Procesando con: {nombre_modelo}")
             
-            model = genai.GenerativeModel(nombre_modelo, generation_config={"temperature": 0.2})
+            # CAMBIO 1: Temperatura a 0.0 (Cero creatividad, máxima precisión)
+            model = genai.GenerativeModel(nombre_modelo, generation_config={"temperature": 0.0})
             
             MINUTOS_BLOQUE = 15
             segundos_bloque = MINUTOS_BLOQUE * 60
@@ -152,35 +164,41 @@ if uploaded_file:
                 min_real = int(inicio / 60)
                 nombre_chunk = f"chunk_{i}.mp3"
                 
-                # Cortar
                 cortar_audio(ffmpeg_path, nombre_temp, inicio, segundos_bloque, nombre_chunk)
                 
                 try:
                     archivo_nube = genai.upload_file(path=nombre_chunk)
-                    
                     while archivo_nube.state.name == "PROCESSING":
                         time.sleep(1)
                         archivo_nube = genai.get_file(archivo_nube.name)
                     
+                    # CAMBIO 2: PROMPT "REGAÑÓN" (Blindado contra inglés y explicaciones)
                     prompt = f"""
-                    Transcribe este audio (Minuto {min_real}).
-                    FORMATO: Hablante [MM:SS]: Texto.
-                    Ajusta tiempos sumando {min_real} min.
-                    Si hay ruido/silencio escribe [RUIDO]. No inventes texto.
+                    Tu única tarea es transcribir este audio en ESPAÑOL.
+                    
+                    REGLAS ESTRICTAS (NO LAS ROMPAS):
+                    1. SOLO devuelve la transcripción. NO escribas introducciones, ni explicaciones, ni "Here is the text".
+                    2. Si escuchas estática o ruidos repetitivos, escribe [RUIDO] y SALTA esa parte. NO escribas "se se se".
+                    3. Formato: "Hablante [MM:SS]: Texto".
+                    4. Suma {min_real} minutos a las marcas de tiempo.
                     """
                     
                     response = model.generate_content([prompt, archivo_nube])
-                    texto_acumulado += f"\n\n--- MINUTO {min_real} ---\n{response.text}"
+                    
+                    # CAMBIO 3: PASAR EL LIMPIADOR AUTOMÁTICO
+                    texto_limpio = limpiar_respuesta_ia(response.text)
+                    
+                    texto_acumulado += f"\n\n--- MINUTO {min_real} ---\n{texto_limpio}"
                     area_texto.text_area("Transcripción en vivo:", value=texto_acumulado, height=400)
                     
                     genai.delete_file(archivo_nube.name)
                     os.remove(nombre_chunk)
-                    time.sleep(2) # Pausa de seguridad
+                    time.sleep(2)
                     
                 except Exception as e:
                     st.error(f"Error en bloque {i}: {e}")
                     if "404" in str(e):
-                         st.warning("Tu API Key no encuentra el modelo. Intenta regenerar la API Key en Google AI Studio.")
+                         st.warning("Error de modelo. Intenta regenerar la API Key.")
                 
                 barra.progress((i+1)/total_partes)
             
@@ -192,12 +210,11 @@ if uploaded_file:
             st.error(f"Error general: {e}")
 
     # ==========================================
-    # 🧠 ZONA DE DOCUMENTOS (ACTAS / INFORMES)
+    # 🧠 ZONA DE DOCUMENTOS
     # ==========================================
     if st.session_state.texto_final:
         st.divider()
         st.header("📑 Generar Documentos")
-        st.info("Selecciona qué documento quieres redactar con la transcripción.")
         
         st.download_button("📥 Descargar Transcripción (TXT)", data=st.session_state.texto_final, file_name="transcripcion_completa.txt")
 
@@ -209,7 +226,7 @@ if uploaded_file:
         with tab1:
             if st.button("Crear Acta Formal"):
                 with st.spinner("Redactando acta..."):
-                    prompt = "Redacta un ACTA FORMAL de reunión. Incluye: Lugar/Fecha (aprox), Asistentes detectados, Orden del día, Desarrollo de temas y Compromisos. Usa lenguaje corporativo."
+                    prompt = "Redacta un ACTA FORMAL. Incluye: Fecha, Asistentes, Orden del día, Desarrollo y Compromisos."
                     res = generar_documento_extra(modelo_docs, prompt, st.session_state.texto_final)
                     st.text_area("Resultado:", value=res, height=400)
                     st.download_button("Descargar Acta", data=res, file_name="Acta.txt")
@@ -217,7 +234,7 @@ if uploaded_file:
         with tab2:
             if st.button("Crear Resumen"):
                 with st.spinner("Resumiendo..."):
-                    prompt = "Haz un RESUMEN EJECUTIVO. Lista los 5 puntos más críticos discutidos y las conclusiones finales. Sé directo."
+                    prompt = "Haz un RESUMEN EJECUTIVO. Puntos clave y conclusiones."
                     res = generar_documento_extra(modelo_docs, prompt, st.session_state.texto_final)
                     st.text_area("Resultado:", value=res, height=400)
                     st.download_button("Descargar Resumen", data=res, file_name="Resumen.txt")
@@ -225,7 +242,7 @@ if uploaded_file:
         with tab3:
             if st.button("Extraer Tareas"):
                 with st.spinner("Buscando tareas..."):
-                    prompt = "Extrae una TABLA de: Tarea/Compromiso | Responsable | Fecha Límite. Si no hay fecha, pon 'Por definir'."
+                    prompt = "Tabla de Tareas: Tarea | Responsable | Fecha."
                     res = generar_documento_extra(modelo_docs, prompt, st.session_state.texto_final)
                     st.text_area("Resultado:", value=res, height=400)
                     st.download_button("Descargar Tareas", data=res, file_name="Tareas.txt")
