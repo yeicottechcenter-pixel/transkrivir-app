@@ -9,7 +9,7 @@ import shutil
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="TransKrivir.ai Suite", page_icon="🎙️", layout="wide")
 
-# --- ESTILOS ---
+# --- ESTILOS CSS ---
 st.markdown("""
     <style>
     .stButton>button {width: 100%; background-color: #FF4B4B; color: white; font-weight: bold;}
@@ -57,33 +57,40 @@ def obtener_duracion(archivo, ffprobe_path):
     except: return 0
 
 def cortar_audio(ffmpeg_path, entrada, inicio, duracion, salida):
-    # Filtro anti-ruido (-ar 16000)
+    # Filtro -ar 16000 para evitar bucles de "se se se"
     cmd = [ffmpeg_path, "-y", "-i", entrada, "-ss", str(inicio), "-t", str(duracion), 
            "-vn", "-acodec", "libmp3lame", "-ac", "1", "-ar", "16000", "-b:a", "64k", salida]
     subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, shell=False)
 
-def obtener_modelo_seguro():
-    """Selecciona el modelo más estable disponible en la cuenta"""
+def buscar_modelo_compatible():
+    """Busca el mejor modelo disponible en la cuenta del usuario SIN adivinar"""
     try:
-        modelos = list(genai.list_models())
-        nombres = [m.name for m in modelos]
-        # Prioridad a versiones estables
-        candidatos = ["models/gemini-1.5-flash-002", "models/gemini-1.5-flash-001", "models/gemini-1.5-flash"]
-        for c in candidatos:
-            if c in nombres: return c
-        return "models/gemini-1.5-flash" # Fallback
-    except:
+        mis_modelos = list(genai.list_models())
+        # Filtramos solo los que generan texto
+        nombres = [m.name for m in mis_modelos if 'generateContent' in m.supported_generation_methods]
+        
+        # PRIORIDAD 1: Versiones estables exactas (Flash 002 o 001)
+        # Estas no fallan con 404 ni 429.
+        for m in nombres:
+            if 'gemini-1.5-flash-00' in m: return m
+            
+        # PRIORIDAD 2: El alias estándar (si la cuenta lo tiene)
+        if 'models/gemini-1.5-flash' in nombres: return 'models/gemini-1.5-flash'
+        
+        # PRIORIDAD 3: Cualquier Flash que NO sea experimental (evitar error 429)
+        for m in nombres:
+            if 'flash' in m and 'exp' not in m: return m
+
+        # EMERGENCIA: Lo que sea que haya (Pro, Flash Exp, etc)
+        return nombres[0]
+        
+    except Exception as e:
+        # Fallback final por si todo falla
         return "models/gemini-1.5-flash"
 
 def generar_documento_extra(modelo, prompt_base, texto_transcrito):
-    """Función genérica para crear actas, resúmenes, etc."""
-    full_prompt = f"""
-    {prompt_base}
-    
-    BASADO EN LA SIGUIENTE TRANSCRIPCIÓN COMPLETA:
-    {texto_transcrito}
-    """
-    response = modelo.generate_content(full_prompt)
+    prompt_completo = f"{prompt_base}\n\nBASADO EN ESTA TRANSCRIPCIÓN:\n{texto_transcrito}"
+    response = modelo.generate_content(prompt_completo)
     return response.text
 
 # ==========================================
@@ -91,11 +98,11 @@ def generar_documento_extra(modelo, prompt_base, texto_transcrito):
 # ==========================================
 
 st.title("🎙️ TransKrivir.ai Suite")
-st.markdown("### Transcripción, Actas y Resúmenes Automáticos")
+st.markdown("### Transcripción + Actas + Informes")
 
-uploaded_file = st.file_uploader("Sube tu archivo (Hasta 2GB)", type=['mp3', 'm4a', 'wav', 'flac'])
+uploaded_file = st.file_uploader("Sube tu archivo", type=['mp3', 'm4a', 'wav', 'flac'])
 
-# Inicializar estado de sesión para guardar la transcripción si no existe
+# Estado para guardar el texto y no perderlo al generar actas
 if 'texto_final' not in st.session_state:
     st.session_state.texto_final = ""
 
@@ -112,16 +119,24 @@ if uploaded_file:
 
     duracion_seg = obtener_duracion(nombre_temp, ffprobe_path)
     
-    if duracion_seg > 0:
+    # Corrección por si FFprobe lee mal la duración (0 minutos) pero el archivo es grande
+    if duracion_seg < 60 and uploaded_file.size > 1000000:
+        st.warning("⚠️ Lectura de duración imprecisa. Usando modo seguro (15 min).")
+        duracion_seg = 900 # 15 minutos forzados
+    elif duracion_seg > 0:
         st.success(f"✅ Archivo cargado: {int(duracion_seg/60)} minutos.")
     else:
         duracion_seg = 600
 
-    # --- BOTÓN DE TRANSCRIPCIÓN ---
+    # --- BOTÓN PRINCIPAL ---
     if st.button("🚀 INICIAR TRANSCRIPCIÓN"):
         try:
             genai.configure(api_key=api_key)
-            nombre_modelo = obtener_modelo_seguro()
+            
+            # BÚSQUEDA AUTOMÁTICA DEL MODELO CORRECTO
+            nombre_modelo = buscar_modelo_compatible()
+            st.toast(f"Usando motor: {nombre_modelo}") # Te avisa cuál eligió
+            
             model = genai.GenerativeModel(nombre_modelo, generation_config={"temperature": 0.2})
             
             MINUTOS_BLOQUE = 15
@@ -137,16 +152,18 @@ if uploaded_file:
                 min_real = int(inicio / 60)
                 nombre_chunk = f"chunk_{i}.mp3"
                 
+                # Cortar
                 cortar_audio(ffmpeg_path, nombre_temp, inicio, segundos_bloque, nombre_chunk)
                 
                 try:
                     archivo_nube = genai.upload_file(path=nombre_chunk)
+                    
                     while archivo_nube.state.name == "PROCESSING":
                         time.sleep(1)
                         archivo_nube = genai.get_file(archivo_nube.name)
                     
                     prompt = f"""
-                    Transcribe este audio (Min {min_real}).
+                    Transcribe este audio (Minuto {min_real}).
                     FORMATO: Hablante [MM:SS]: Texto.
                     Ajusta tiempos sumando {min_real} min.
                     Si hay ruido/silencio escribe [RUIDO]. No inventes texto.
@@ -158,14 +175,15 @@ if uploaded_file:
                     
                     genai.delete_file(archivo_nube.name)
                     os.remove(nombre_chunk)
-                    time.sleep(2)
+                    time.sleep(2) # Pausa de seguridad
                     
                 except Exception as e:
-                    st.error(f"Error bloque {i}: {e}")
+                    st.error(f"Error en bloque {i}: {e}")
+                    if "404" in str(e):
+                         st.warning("Tu API Key no encuentra el modelo. Intenta regenerar la API Key en Google AI Studio.")
                 
                 barra.progress((i+1)/total_partes)
             
-            # GUARDAMOS EL TEXTO EN SESIÓN PARA USARLO DESPUÉS
             st.session_state.texto_final = texto_acumulado
             st.success("¡Transcripción Finalizada!")
             st.balloons()
@@ -174,69 +192,40 @@ if uploaded_file:
             st.error(f"Error general: {e}")
 
     # ==========================================
-    # 📝 ZONA DE DOCUMENTOS INTELIGENTES
+    # 🧠 ZONA DE DOCUMENTOS (ACTAS / INFORMES)
     # ==========================================
     if st.session_state.texto_final:
         st.divider()
-        st.header("🧠 Generación de Documentos")
-        st.info("Usa la transcripción generada para crear documentos automáticamente.")
+        st.header("📑 Generar Documentos")
+        st.info("Selecciona qué documento quieres redactar con la transcripción.")
         
-        # Opción de descarga de la transcripción base
-        st.download_button("📥 Descargar Transcripción Completa", data=st.session_state.texto_final, file_name="transcripcion_completa.txt")
+        st.download_button("📥 Descargar Transcripción (TXT)", data=st.session_state.texto_final, file_name="transcripcion_completa.txt")
 
-        # Pestañas para las nuevas funciones
-        tab1, tab2, tab3 = st.tabs(["📄 Generar Acta", "📊 Generar Resumen", "📋 Informe de Tareas"])
+        tab1, tab2, tab3 = st.tabs(["📄 Generar Acta", "📊 Resumen Ejecutivo", "✅ Lista de Tareas"])
         
-        # Configuramos el modelo nuevamente por si acaso
         genai.configure(api_key=api_key)
-        nombre_modelo_docs = obtener_modelo_seguro()
-        model_docs = genai.GenerativeModel(nombre_modelo_docs)
+        modelo_docs = genai.GenerativeModel(buscar_modelo_compatible())
 
         with tab1:
-            st.write("Crea un acta formal con asistentes, orden del día y conclusiones.")
-            if st.button("Generar Acta Formal"):
+            if st.button("Crear Acta Formal"):
                 with st.spinner("Redactando acta..."):
-                    prompt_acta = """
-                    Actúa como un secretario experto. Basado en la transcripción, redacta un ACTA FORMAL.
-                    Estructura obligatoria:
-                    1. ENCABEZADO (Fecha, Hora, Lugar aproximados o por definir).
-                    2. ASISTENTES (Identifica los nombres de quienes hablaron).
-                    3. ORDEN DEL DÍA (Deduce los temas tratados).
-                    4. DESARROLLO (Resumen cronológico de lo discutido).
-                    5. COMPROMISOS Y CONCLUSIONES.
-                    Usa lenguaje formal y corporativo.
-                    """
-                    acta = generar_documento_extra(model_docs, prompt_acta, st.session_state.texto_final)
-                    st.text_area("Vista previa Acta:", value=acta, height=400)
-                    st.download_button("📥 Descargar Acta", data=acta, file_name="Acta_Reunion.txt")
+                    prompt = "Redacta un ACTA FORMAL de reunión. Incluye: Lugar/Fecha (aprox), Asistentes detectados, Orden del día, Desarrollo de temas y Compromisos. Usa lenguaje corporativo."
+                    res = generar_documento_extra(modelo_docs, prompt, st.session_state.texto_final)
+                    st.text_area("Resultado:", value=res, height=400)
+                    st.download_button("Descargar Acta", data=res, file_name="Acta.txt")
 
         with tab2:
-            st.write("Crea un resumen ejecutivo de los puntos más importantes.")
-            if st.button("Generar Resumen"):
+            if st.button("Crear Resumen"):
                 with st.spinner("Resumiendo..."):
-                    prompt_resumen = """
-                    Actúa como un analista ejecutivo. Haz un RESUMEN EJECUTIVO de la reunión.
-                    - Identifica el tema principal.
-                    - Lista los 5 puntos más importantes discutidos.
-                    - Ignora discusiones triviales o chistes.
-                    - Sé directo y conciso.
-                    """
-                    resumen = generar_documento_extra(model_docs, prompt_resumen, st.session_state.texto_final)
-                    st.text_area("Vista previa Resumen:", value=resumen, height=400)
-                    st.download_button("📥 Descargar Resumen", data=resumen, file_name="Resumen_Ejecutivo.txt")
-
+                    prompt = "Haz un RESUMEN EJECUTIVO. Lista los 5 puntos más críticos discutidos y las conclusiones finales. Sé directo."
+                    res = generar_documento_extra(modelo_docs, prompt, st.session_state.texto_final)
+                    st.text_area("Resultado:", value=res, height=400)
+                    st.download_button("Descargar Resumen", data=res, file_name="Resumen.txt")
+        
         with tab3:
-            st.write("Extrae una lista de tareas, responsables y fechas mencionadas.")
-            if st.button("Generar Informe de Tareas"):
-                with st.spinner("Analizando tareas..."):
-                    prompt_tareas = """
-                    Extrae exclusivamente los COMPROMISOS, TAREAS Y ACUERDOS.
-                    Formato de tabla o lista:
-                    - Tarea/Compromiso: [Descripción]
-                    - Responsable: [Nombre o Cargo]
-                    - Fecha límite (si se mencionó): [Fecha o 'No definida']
-                    Si no hay tareas explícitas, indica las conclusiones principales.
-                    """
-                    informe = generar_documento_extra(model_docs, prompt_tareas, st.session_state.texto_final)
-                    st.text_area("Vista previa Informe:", value=informe, height=400)
-                    st.download_button("📥 Descargar Informe", data=informe, file_name="Informe_Tareas.txt")
+            if st.button("Extraer Tareas"):
+                with st.spinner("Buscando tareas..."):
+                    prompt = "Extrae una TABLA de: Tarea/Compromiso | Responsable | Fecha Límite. Si no hay fecha, pon 'Por definir'."
+                    res = generar_documento_extra(modelo_docs, prompt, st.session_state.texto_final)
+                    st.text_area("Resultado:", value=res, height=400)
+                    st.download_button("Descargar Tareas", data=res, file_name="Tareas.txt")
